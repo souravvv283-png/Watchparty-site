@@ -1,0 +1,103 @@
+.panel {
+  flex-shrink: 0;
+  background: var(--bg-800);
+  border-top: 1px solid var(--border);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.topRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.urlForm {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+}
+
+.urlInput { flex: 1; }
+
+.urlError {
+  font-size: 12px;
+  color: var(--danger);
+  padding: 0 2px;
+}
+
+.ssBtn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.playRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.seekForm {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.seekInput {
+  width: 80px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.hostBadge {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--accent-bright);
+  font-weight: 600;
+}
+
+/* ── Screen sharing status ── */
+.sharingRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sharingDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  flex-shrink: 0;
+  animation: blink 1.2s infinite;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.2; }
+}
+
+.sharingText {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+/* ── Viewer bar ── */
+.bar {
+  flex-shrink: 0;
+  background: var(--bg-800);
+  border-top: 1px solid var(--border);
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.viewerNote {
+  font-size: 13px;
+  color: var(--text-muted);
+}

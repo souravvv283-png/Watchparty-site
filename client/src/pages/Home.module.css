@@ -1,0 +1,108 @@
+.page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: radial-gradient(ellipse at 50% 0%, #1a1030 0%, var(--bg-900) 60%);
+}
+
+.hero {
+  text-align: center;
+  margin-bottom: 36px;
+}
+
+.logo {
+  font-size: 56px;
+  margin-bottom: 12px;
+  filter: drop-shadow(0 0 24px rgba(124, 92, 191, 0.6));
+}
+
+.title {
+  font-size: 42px;
+  font-weight: 800;
+  background: linear-gradient(135deg, #e8e8f0 0%, var(--accent-bright) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  letter-spacing: -1px;
+  margin-bottom: 10px;
+}
+
+.subtitle {
+  color: var(--text-secondary);
+  font-size: 16px;
+}
+
+.card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-800);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 28px;
+  box-shadow: var(--shadow);
+}
+
+.tabs {
+  display: flex;
+  background: var(--bg-700);
+  border-radius: var(--radius-sm);
+  padding: 4px;
+  margin-bottom: 24px;
+  gap: 4px;
+}
+
+.tab {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 600;
+  transition: all 0.15s;
+  border: none;
+  cursor: pointer;
+}
+
+.tabActive {
+  background: var(--accent);
+  color: #fff;
+}
+
+.field {
+  margin-bottom: 16px;
+}
+
+.label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.error {
+  background: rgba(224, 82, 82, 0.12);
+  border: 1px solid rgba(224, 82, 82, 0.3);
+  color: #e08080;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.fullBtn {
+  width: 100%;
+  margin-top: 4px;
+}
+
+.footer {
+  margin-top: 24px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
