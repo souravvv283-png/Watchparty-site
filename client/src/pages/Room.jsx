@@ -1,21 +1,8 @@
 /**
- * Room.jsx
- * Main watch-party room.
- * Handles Socket.io events, YouTube sync, and WebRTC screen sharing.
- *
- * Screen Share Architecture:
- *   HOST side:
- *     - getDisplayMedia() → localStream
- *     - For each viewer: create RTCPeerConnection → addTrack → createOffer → send via socket
- *     - On 'screen-share-answer' → setRemoteDescription
- *     - On 'ice-candidate' → addIceCandidate
- *     - On stream end (browser stop button) → stopScreenShare()
- *
- *   VIEWER side:
- *     - On 'screen-share-start' → emit 'screen-share-ready' to host
- *     - On 'screen-share-offer' → create RTCPeerConnection → setRemoteDesc → createAnswer → send
- *     - On 'ice-candidate' → addIceCandidate
- *     - peer.ontrack → set remoteStream → render in <ScreenSharePlayer>
+ * Room.jsx — Watch Party main room
+ * - Anyone can screen share (not just host)
+ * - Chat notification sound via Web Audio API
+ * - Mobile optimised layout
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
@@ -27,7 +14,6 @@ import UserList from '../components/UserList';
 import Controls from '../components/Controls';
 import styles from './Room.module.css';
 
-// Free/public STUN servers — enough for most networks
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -36,9 +22,9 @@ const ICE_SERVERS = {
 };
 
 export default function Room() {
-  const { roomId }   = useParams();
-  const navigate     = useNavigate();
-  const location     = useLocation();
+  const { roomId }  = useParams();
+  const navigate    = useNavigate();
+  const location    = useLocation();
 
   const [userName] = useState(() => {
     const fromState = location.state?.userName;
@@ -46,7 +32,7 @@ export default function Room() {
     return window.prompt('Enter your display name:') || 'Guest';
   });
 
-  // ── Room state ─────────────────────────────────────────────────────────────
+  // ── Room state ──────────────────────────────────────────────────────────────
   const [connected,       setConnected]       = useState(false);
   const [isHost,          setIsHost]          = useState(false);
   const [hostId,          setHostId]          = useState(null);
@@ -57,121 +43,88 @@ export default function Room() {
   const [copied,          setCopied]          = useState(false);
   const [isReady,         setIsReady]         = useState(false);
 
-  // ── Screen share state ─────────────────────────────────────────────────────
-  const [isScreenSharing, setIsScreenSharing] = useState(false); // host is currently sharing
-  const [localStream,     setLocalStream]     = useState(null);  // host's capture stream
-  const [remoteStream,    setRemoteStream]    = useState(null);  // viewer's received stream
-  const [viewMode,        setViewMode]        = useState('youtube'); // 'youtube' | 'screenshare'
+  // ── Screen share state ──────────────────────────────────────────────────────
+  const [isScreenSharing, setIsScreenSharing] = useState(false); // THIS user is sharing
+  const [localStream,     setLocalStream]     = useState(null);  // this user's capture stream
+  const [remoteStream,    setRemoteStream]    = useState(null);  // received stream
+  const [viewMode,        setViewMode]        = useState('youtube');
+  const [sharerName,      setSharerName]      = useState('');
 
-  // WebRTC: host keeps one RTCPeerConnection per viewer
-  const peerConns = useRef(new Map()); // viewerId → RTCPeerConnection
+  // WebRTC peer connections (sharer → one per viewer)
+  const peerConns     = useRef(new Map());
+  const playerRef     = useRef(null);
+  const isSharingRef  = useRef(false);
+  const isHostRef     = useRef(isHost);
+  const localStreamRef = useRef(localStream);
 
-  // YouTube player imperative handle
-  const playerRef = useRef(null);
+  useEffect(() => { isSharingRef.current  = isScreenSharing; }, [isScreenSharing]);
+  useEffect(() => { isHostRef.current     = isHost;          }, [isHost]);
+  useEffect(() => { localStreamRef.current = localStream;    }, [localStream]);
 
-  // Keep latest isHost value accessible inside socket callbacks
-  const isHostRef = useRef(isHost);
-  useEffect(() => { isHostRef.current = isHost; }, [isHost]);
-
-  // ─────────────────────────────────────────────────────────────────────────
-  // Utility: create a peer connection for one viewer (HOST side)
-  // ─────────────────────────────────────────────────────────────────────────
-  function createHostPeer(viewerId, stream) {
-    // Clean up any existing connection to this viewer
+  // ── WebRTC: sharer → send offer to one viewer ───────────────────────────────
+  function createSharerPeer(viewerId, stream) {
     if (peerConns.current.has(viewerId)) {
       peerConns.current.get(viewerId).close();
     }
-
     const pc = new RTCPeerConnection(ICE_SERVERS);
     peerConns.current.set(viewerId, pc);
 
-    // Add all tracks from the capture stream
     stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
-    // Relay ICE candidates to this viewer
     pc.onicecandidate = ({ candidate }) => {
-      if (candidate) {
-        socket.emit('ice-candidate', { targetId: viewerId, candidate });
-      }
+      if (candidate) socket.emit('ice-candidate', { targetId: viewerId, candidate });
     };
 
-    // Create and send offer
     pc.createOffer()
       .then((offer) => pc.setLocalDescription(offer))
-      .then(() => {
-        socket.emit('screen-share-offer', {
-          roomId,
-          offer: pc.localDescription,
-          targetId: viewerId,
-        });
-      })
+      .then(() => socket.emit('screen-share-offer', {
+        roomId, offer: pc.localDescription, targetId: viewerId,
+      }))
       .catch(console.error);
 
     return pc;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Utility: create a peer connection for receiving (VIEWER side)
-  // ─────────────────────────────────────────────────────────────────────────
-  function createViewerPeer(hostSocketId, offer) {
-    // Clean up previous peer if any
-    if (peerConns.current.has('host')) {
-      peerConns.current.get('host').close();
+  // ── WebRTC: viewer → answer offer from sharer ───────────────────────────────
+  function createViewerPeer(sharerId, offer) {
+    if (peerConns.current.has('sharer')) {
+      peerConns.current.get('sharer').close();
     }
-
     const pc = new RTCPeerConnection(ICE_SERVERS);
-    peerConns.current.set('host', pc);
+    peerConns.current.set('sharer', pc);
 
-    // When we get a track, display it
     pc.ontrack = (event) => {
       setRemoteStream(event.streams[0]);
       setViewMode('screenshare');
     };
 
-    // Relay ICE candidates back to host
     pc.onicecandidate = ({ candidate }) => {
-      if (candidate) {
-        socket.emit('ice-candidate', { targetId: hostSocketId, candidate });
-      }
+      if (candidate) socket.emit('ice-candidate', { targetId: sharerId, candidate });
     };
 
-    // Set remote description → create answer → send back
     pc.setRemoteDescription(new RTCSessionDescription(offer))
       .then(() => pc.createAnswer())
       .then((answer) => pc.setLocalDescription(answer))
-      .then(() => {
-        socket.emit('screen-share-answer', {
-          roomId,
-          answer: pc.localDescription,
-          hostId: hostSocketId,
-        });
-      })
+      .then(() => socket.emit('screen-share-answer', {
+        roomId, answer: pc.localDescription, sharerId,
+      }))
       .catch(console.error);
 
     return pc;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Stop screen sharing (HOST): clean up stream + peer connections
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── Stop sharing ────────────────────────────────────────────────────────────
   const stopScreenShare = useCallback(() => {
-    // Stop all media tracks
-    localStream?.getTracks().forEach((t) => t.stop());
-
-    // Close all peer connections
+    localStreamRef.current?.getTracks().forEach((t) => t.stop());
     peerConns.current.forEach((pc) => pc.close());
     peerConns.current.clear();
-
     setLocalStream(null);
     setIsScreenSharing(false);
     setViewMode('youtube');
-
     socket.emit('screen-share-stop', { roomId });
-  }, [localStream, roomId]);
+  }, [roomId]);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Start screen sharing (HOST)
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── Start sharing — available to EVERYONE ───────────────────────────────────
   async function startScreenShare() {
     if (!navigator.mediaDevices?.getDisplayMedia) {
       alert('Screen sharing is not supported in this browser. Try Chrome or Edge.');
@@ -180,30 +133,39 @@ export default function Room() {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: 30 },
-        audio: true, // capture system audio if browser supports it
+        audio: true,
       });
-
       setLocalStream(stream);
       setIsScreenSharing(true);
       setViewMode('screenshare');
-
-      // When user clicks the browser's native "Stop sharing" button
       stream.getVideoTracks()[0].onended = () => stopScreenShare();
-
-      // Notify viewers to prepare peer connections
       socket.emit('screen-share-start', { roomId });
     } catch (err) {
       if (err.name !== 'NotAllowedError') {
         console.error('getDisplayMedia error:', err);
         alert('Could not start screen sharing: ' + err.message);
       }
-      // User cancelled the picker — do nothing
     }
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // Socket event registration
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── Chat notification sound (Web Audio API — no external files needed) ──────
+  function playChatSound() {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = 880;
+      osc.type = 'sine';
+      gain.gain.setValueAtTime(0.15, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.25);
+    } catch (_) {}
+  }
+
+  // ── Socket events ───────────────────────────────────────────────────────────
   useEffect(() => {
     if (!socket.connected) socket.connect();
 
@@ -211,7 +173,6 @@ export default function Room() {
       setConnected(true);
       socket.emit('join-room', { roomId, userName });
     }
-
     function onDisconnect() { setConnected(false); }
 
     function onRoomJoined({ isHost: host, hostId: hid, users: us, videoId: vid }) {
@@ -244,7 +205,6 @@ export default function Room() {
 
     function onVideoChanged({ videoId: vid }) { setVideoId(vid); }
 
-    // ── YouTube playback events ──
     function onPlay({ currentTime }) {
       playerRef.current?.seekTo(currentTime);
       playerRef.current?.play();
@@ -263,58 +223,56 @@ export default function Room() {
       if (isPlaying) player.play(); else player.pause();
     }
 
-    // ── Screen share signaling ──────────────────────────────────────────────
-    // VIEWER: host started sharing → tell host we're ready
-    function onScreenShareStart({ hostId: hid }) {
+    // ── Screen share ──────────────────────────────────────────────────────────
+    function onScreenShareStart({ sharerId, sharerName: sName }) {
       setViewMode('screenshare');
-      // Let the host know we're ready to receive an offer
-      socket.emit('screen-share-ready', { roomId, hostId: hid });
+      setSharerName(sName);
+      addSystemMessage(`${sName} started screen sharing 📡`);
+      socket.emit('screen-share-ready', { roomId, sharerId });
     }
 
-    // HOST: a viewer is ready → create offer for them
     function onScreenShareReady({ viewerId }) {
-      if (!isHostRef.current) return;
-      // Use the latest localStream via closure captured in a ref
+      if (!isSharingRef.current) return;
       const stream = localStreamRef.current;
       if (!stream) return;
-      createHostPeer(viewerId, stream);
+      createSharerPeer(viewerId, stream);
     }
 
-    // VIEWER: received offer from host → answer it
-    function onScreenShareOffer({ offer, hostId: hid }) {
-      createViewerPeer(hid, offer);
+    function onScreenShareOffer({ offer, sharerId }) {
+      createViewerPeer(sharerId, offer);
     }
 
-    // HOST: received answer from a viewer
     function onScreenShareAnswer({ answer, viewerId }) {
       const pc = peerConns.current.get(viewerId);
       if (!pc) return;
       pc.setRemoteDescription(new RTCSessionDescription(answer)).catch(console.error);
     }
 
-    // Both sides: received an ICE candidate
     function onIceCandidate({ candidate, fromId }) {
-      // Determine which peer connection this is for
-      const key = isHostRef.current ? fromId : 'host';
+      const key = isSharingRef.current ? fromId : 'sharer';
       const pc  = peerConns.current.get(key);
       if (!pc) return;
       pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
     }
 
-    // VIEWER: host stopped sharing
     function onScreenShareStop() {
-      peerConns.current.get('host')?.close();
-      peerConns.current.delete('host');
+      peerConns.current.get('sharer')?.close();
+      peerConns.current.delete('sharer');
       setRemoteStream(null);
       setViewMode('youtube');
-      addSystemMessage('Host stopped screen sharing');
+      setSharerName('');
+      addSystemMessage('Screen sharing ended');
     }
 
-    // ── Chat & users ────────────────────────────────────────────────────────
-    function onChatMessage(msg)       { setMessages((p) => [...p, msg]); }
+    // ── Chat — play sound for incoming messages ────────────────────────────────
+    function onChatMessage(msg) {
+      setMessages((p) => [...p, msg]);
+      // Only play sound if message is from someone else
+      if (msg.userId !== socket.id) playChatSound();
+    }
+
     function onUsersUpdated({ users: us }) { setUsers(us); }
 
-    // Register all handlers
     socket.on('connect',             onConnect);
     socket.on('disconnect',          onDisconnect);
     socket.on('room-joined',         onRoomJoined);
@@ -362,11 +320,7 @@ export default function Room() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Keep localStream accessible in socket handlers without re-registering ──
-  const localStreamRef = useRef(localStream);
-  useEffect(() => { localStreamRef.current = localStream; }, [localStream]);
-
-  // ── Host periodic YouTube sync ─────────────────────────────────────────────
+  // ── Host periodic YouTube sync ──────────────────────────────────────────────
   useEffect(() => {
     if (!isHost || isScreenSharing) return;
     const id = setInterval(() => {
@@ -381,7 +335,7 @@ export default function Room() {
     return () => clearInterval(id);
   }, [isHost, isScreenSharing, roomId]);
 
-  // ── Clean up on unmount ────────────────────────────────────────────────────
+  // ── Cleanup on unmount ──────────────────────────────────────────────────────
   useEffect(() => {
     return () => {
       localStreamRef.current?.getTracks().forEach((t) => t.stop());
@@ -389,7 +343,7 @@ export default function Room() {
     };
   }, []);
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
+  // ── Helpers ─────────────────────────────────────────────────────────────────
   function addSystemMessage(text) {
     setMessages((p) => [
       ...p,
@@ -398,32 +352,25 @@ export default function Room() {
   }
 
   function sendChatMessage(message) { socket.emit('chat-message', { roomId, message }); }
-
-  function handleSetVideo(vid) {
-    socket.emit('set-video', { roomId, videoId: vid });
-  }
+  function handleSetVideo(vid)      { socket.emit('set-video', { roomId, videoId: vid }); }
 
   function handlePlay() {
     const t = playerRef.current?.getCurrentTime?.() ?? 0;
     socket.emit('play', { roomId, currentTime: t });
   }
-
   function handlePause() {
     const t = playerRef.current?.getCurrentTime?.() ?? 0;
     socket.emit('pause', { roomId, currentTime: t });
   }
-
   function handleSeek(time) {
     socket.emit('seek', { roomId, currentTime: time });
     playerRef.current?.seekTo(time);
   }
-
   function handleToggleReady() {
     const next = !isReady;
     setIsReady(next);
     socket.emit('toggle-ready', { roomId, isReady: next });
   }
-
   function copyRoomId() {
     navigator.clipboard.writeText(roomId).then(() => {
       setCopied(true);
@@ -431,7 +378,7 @@ export default function Room() {
     });
   }
 
-  // ── Error state ────────────────────────────────────────────────────────────
+  // ── Error page ──────────────────────────────────────────────────────────────
   if (error) {
     return (
       <div className={styles.errorPage}>
@@ -439,24 +386,17 @@ export default function Room() {
           <div style={{ fontSize: 48 }}>😕</div>
           <h2>Oops!</h2>
           <p>{error}</p>
-          <button className="btn btn-primary" onClick={() => navigate('/')}>
-            Back to Home
-          </button>
+          <button className="btn btn-primary" onClick={() => navigate('/')}>Back to Home</button>
         </div>
       </div>
     );
   }
 
-  // ── Decide what to render in the video area ────────────────────────────────
-  // - Host in screenshare mode → VideoPlayer with mode="screenshare" + localStream preview
-  // - Viewer in screenshare mode → ScreenSharePlayer with remoteStream
-  // - Otherwise → YouTube VideoPlayer
-  const showScreenShareViewer = !isHost && viewMode === 'screenshare';
+  const showScreenShareViewer = !isScreenSharing && viewMode === 'screenshare';
 
-  // ── Main UI ────────────────────────────────────────────────────────────────
   return (
     <div className={styles.layout}>
-      {/* Header */}
+      {/* ── Header ── */}
       <header className={styles.header}>
         <div className={styles.headerLeft}>
           <span className={styles.brandIcon}>🎬</span>
@@ -470,27 +410,26 @@ export default function Room() {
             <span className={styles.copyIcon}>{copied ? '✓' : '⎘'}</span>
           </button>
           {!connected && <span className={styles.offlineDot} title="Reconnecting…" />}
-          {isScreenSharing && (
-            <span className={styles.liveChip}>● LIVE</span>
+          {(isScreenSharing || viewMode === 'screenshare') && (
+            <span className={styles.liveChip}>
+              ● {isScreenSharing ? 'You are sharing' : `${sharerName} sharing`}
+            </span>
           )}
         </div>
 
         <div className={styles.headerRight}>
           {isHost && <span className="badge badge-host">👑 Host</span>}
           <span className={styles.headerUser}>{userName}</span>
-          <button className="btn btn-secondary btn-sm" onClick={() => navigate('/')}>
-            Leave
-          </button>
+          <button className="btn btn-secondary btn-sm" onClick={() => navigate('/')}>Leave</button>
         </div>
       </header>
 
-      {/* Body */}
+      {/* ── Body ── */}
       <div className={styles.body}>
-        {/* Left: video + controls */}
         <div className={styles.mainCol}>
           <div className={styles.videoWrap}>
             {showScreenShareViewer ? (
-              <ScreenSharePlayer stream={remoteStream} />
+              <ScreenSharePlayer stream={remoteStream} sharerName={sharerName} />
             ) : (
               <VideoPlayer
                 ref={playerRef}
@@ -520,7 +459,6 @@ export default function Room() {
           />
         </div>
 
-        {/* Right: users + chat */}
         <div className={styles.sideCol}>
           <UserList users={users} hostId={hostId} myId={socket.id} />
           <Chat messages={messages} onSend={sendChatMessage} />
